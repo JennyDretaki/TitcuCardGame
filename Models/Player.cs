@@ -1,4 +1,4 @@
-namespace TichuWinForms.Models;
+namespace TichuWinForms_Smooth.Models;
 
 public sealed class Player
 {
@@ -16,6 +16,4 @@ public sealed class Player
     public bool CalledTichu { get; set; }
     public bool CalledGrandTichu { get; set; }
     public bool HasPlayedAnyCard { get; set; }
-
-    public override string ToString() => Name;
 }

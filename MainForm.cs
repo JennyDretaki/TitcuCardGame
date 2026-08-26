@@ -1,92 +1,207 @@
-using TichuWinForms.Game;
-using TichuWinForms.Models;
+using TichuWinForms_Smooth.Game;
+using TichuWinForms_Smooth.Models;
 
-namespace TichuWinForms;
+namespace TichuWinForms_Smooth;
 
 public partial class MainForm : Form
 {
     private readonly TichuGame game = new();
+
     private readonly HashSet<Card> selectedCards = new();
+    private readonly Dictionary<Card, Panel> handCardPanels = new();
+
     private bool botsRunning;
 
     public MainForm()
     {
         InitializeComponent();
-        game.Message += AddLog;
+
+        SetStyle(
+            ControlStyles.AllPaintingInWmPaint |
+            ControlStyles.UserPaint |
+            ControlStyles.OptimizedDoubleBuffer,
+            true);
+
         StartRound();
     }
 
     private void StartRound()
     {
         selectedCards.Clear();
-        lstLog.Items.Clear();
         game.StartRound();
-        RefreshUi();
+
+        RenderHumanHand();
+        RenderCurrentPlay();
+        UpdateAllStatus();
     }
 
-    private void AddLog(string text)
+    // -----------------------------------------------------------------
+    // IMPORTANT PERFORMANCE CHANGE:
+    // The hand is NOT rebuilt whenever the UI changes.
+    // It is rebuilt only when the cards in the human hand actually change.
+    // -----------------------------------------------------------------
+    private void RenderHumanHand()
     {
-        if (InvokeRequired)
+        flpHand.SuspendLayout();
+
+        try
         {
-            BeginInvoke(() => AddLog(text));
+            flpHand.Controls.Clear();
+            handCardPanels.Clear();
+
+            foreach (var card in game.Players[0].Hand)
+            {
+                var panel = CreateCardControl(card, selectable: true);
+                handCardPanels[card] = panel;
+                flpHand.Controls.Add(panel);
+            }
+        }
+        finally
+        {
+            flpHand.ResumeLayout(true);
+        }
+
+        UpdateSelectionLabel();
+    }
+
+    // -----------------------------------------------------------------
+    // The table renders ONLY the latest play.
+    // Previous plays disappear visually, while the game engine keeps
+    // the whole trick internally for correct scoring.
+    // -----------------------------------------------------------------
+    private void RenderCurrentPlay()
+    {
+        flpCurrentPlay.SuspendLayout();
+
+        try
+        {
+            flpCurrentPlay.Controls.Clear();
+
+            foreach (var card in game.CurrentPlayCards)
+                flpCurrentPlay.Controls.Add(CreateCardControl(card, selectable: false));
+        }
+        finally
+        {
+            flpCurrentPlay.ResumeLayout(true);
+        }
+
+        if (game.LastPlayPlayerIndex.HasValue)
+        {
+            lblPlayOwner.Text =
+                $"{game.Players[game.LastPlayPlayerIndex.Value].Name} played";
+        }
+        else
+        {
+            lblPlayOwner.Text = "";
+        }
+    }
+
+    private void UpdateAllStatus()
+    {
+        UpdateScores();
+        UpdatePlayerStatusLabels();
+        UpdateTableStatus();
+        UpdateButtons();
+        UpdateSelectionLabel();
+    }
+
+    private void UpdateScores()
+    {
+        lblYourScore.Text = $"Your team  {game.TeamScores[0]}";
+        lblOpponentScore.Text = $"Opponents  {game.TeamScores[1]}";
+    }
+
+    private void UpdatePlayerStatusLabels()
+    {
+        lblLeft.Text = PlayerText(game.Players[1]);
+        lblPartner.Text = PlayerText(game.Players[2]);
+        lblRight.Text = PlayerText(game.Players[3]);
+    }
+
+    private static string PlayerText(Player player)
+    {
+        if (player.FinishOrder > 0)
+            return $"{player.Name}\nFinished #{player.FinishOrder}";
+
+        string declaration = player.CalledGrandTichu
+            ? " • GRAND TICHU"
+            : player.CalledTichu
+                ? " • TICHU"
+                : "";
+
+        return $"{player.Name}\n{player.Hand.Count} cards{declaration}";
+    }
+
+    private void UpdateTableStatus()
+    {
+        if (game.RoundOver)
+        {
+            lblTurn.Text = game.MatchOver ? "MATCH OVER" : "ROUND OVER";
+
+            lblCombination.Text = game.MatchOver
+                ? (game.TeamScores[0] > game.TeamScores[1]
+                    ? "Your team wins the match."
+                    : "Opponents win the match.")
+                : "Press NEW ROUND to continue.";
+
+            lblWish.Text = "";
             return;
         }
 
-        lstLog.Items.Add(text);
-        lstLog.TopIndex = Math.Max(0, lstLog.Items.Count - 1);
-    }
+        if (!game.ExchangeCompleted)
+        {
+            lblTurn.Text = "EXCHANGE PHASE";
+            lblCombination.Text = "Select exactly 3 cards and press EXCHANGE 3.";
+            lblWish.Text = "";
+            return;
+        }
 
-    private void RefreshUi()
-    {
-        lblTeamScore.Text = $"Your team: {game.TeamScores[0]}";
-        lblOpponentScore.Text = $"Opponents: {game.TeamScores[1]}";
+        var current = game.Players[game.CurrentPlayerIndex];
 
-        lblLeftCards.Text = PlayerStatus(game.Players[1]);
-        lblPartnerCards.Text = PlayerStatus(game.Players[2]);
-        lblRightCards.Text = PlayerStatus(game.Players[3]);
+        lblTurn.Text = current.IsHuman
+            ? "YOUR TURN"
+            : $"{current.Name.ToUpperInvariant()}'S TURN";
+
+        lblCombination.Text = game.TableCombination is null
+            ? "New trick — any legal combination can be played."
+            : $"{FriendlyCombo(game.TableCombination.Type)} • value {game.TableCombination.Value}";
 
         lblWish.Text = game.MahJongWishRank.HasValue
             ? $"MAH JONG WISH: {TichuGame.RankName(game.MahJongWishRank.Value)}"
             : "";
+    }
 
-        bool exchangePhase = !game.ExchangeCompleted;
+    private static string FriendlyCombo(ComboType type) => type switch
+    {
+        ComboType.ConsecutivePairs => "Consecutive pairs",
+        ComboType.FourBomb => "Four-card bomb",
+        ComboType.StraightFlushBomb => "Straight-flush bomb",
+        ComboType.FullHouse => "Full house",
+        _ => type.ToString()
+    };
 
-        if (game.RoundOver)
-        {
-            lblTurn.Text = game.MatchOver ? "MATCH OVER" : "ROUND OVER";
-            lblTableCombo.Text = game.MatchOver
-                ? (game.TeamScores[0] > game.TeamScores[1]
-                    ? "Your team wins!"
-                    : "Opponents win!")
-                : "Click New Round to continue.";
-        }
-        else if (exchangePhase)
-        {
-            lblTurn.Text = "EXCHANGE PHASE";
-            lblTableCombo.Text = "Select 3 cards, then click EXCHANGE 3.";
-        }
-        else
-        {
-            var current = game.Players[game.CurrentPlayerIndex];
-            lblTurn.Text = current.IsHuman
-                ? "YOUR TURN"
-                : $"{current.Name}'s turn";
+    private void UpdateButtons()
+    {
+        bool exchangePhase = !game.ExchangeCompleted && !game.RoundOver;
+        bool humanTurn =
+            game.ExchangeCompleted &&
+            !game.RoundOver &&
+            game.CurrentPlayerIndex == 0;
 
-            lblTableCombo.Text = game.TableCombination is null
-                ? "Lead — play any legal combination."
-                : $"{game.TableCombination.Type} • value {game.TableCombination.Value} • {game.TableCombination.CardCount} card(s)";
-        }
+        btnExchange.Visible = exchangePhase;
+        btnExchange.Enabled = exchangePhase && selectedCards.Count == 3;
 
-        bool humanTurn = !game.RoundOver &&
-                         game.ExchangeCompleted &&
-                         game.CurrentPlayerIndex == 0;
+        btnPlay.Visible = !exchangePhase;
+        btnPass.Visible = !exchangePhase;
+        btnBomb.Visible = !exchangePhase;
 
         btnPlay.Enabled = humanTurn;
         btnPass.Enabled = humanTurn && game.TableCombination is not null;
-        btnBomb.Enabled = !game.RoundOver &&
-                          game.ExchangeCompleted &&
-                          selectedCards.Count > 0;
-        btnExchange.Enabled = exchangePhase && selectedCards.Count == 3;
+
+        btnBomb.Enabled =
+            game.ExchangeCompleted &&
+            !game.RoundOver &&
+            selectedCards.Count > 0;
 
         btnTichu.Enabled =
             !game.RoundOver &&
@@ -98,58 +213,75 @@ public partial class MainForm : Form
             exchangePhase &&
             !game.Players[0].CalledGrandTichu &&
             !game.Players[0].CalledTichu;
-
-        RenderTable();
-        RenderHand();
     }
 
-    private static string PlayerStatus(Player p)
+    private void ToggleCard(Card card)
     {
-        if (p.FinishOrder > 0)
-            return $"Finished #{p.FinishOrder}";
+        if (game.RoundOver)
+            return;
 
-        string call = p.CalledGrandTichu
-            ? " • GT"
-            : p.CalledTichu
-                ? " • T"
-                : "";
+        if (!game.ExchangeCompleted &&
+            !selectedCards.Contains(card) &&
+            selectedCards.Count >= 3)
+            return;
 
-        return $"{p.Hand.Count} cards{call}";
+        if (!selectedCards.Add(card))
+            selectedCards.Remove(card);
+
+        // No RenderHumanHand() here.
+        // Only update the affected card panel.
+        ApplyCardSelectionVisual(card);
+
+        UpdateSelectionLabel();
+        UpdateButtons();
     }
 
-    private void RenderTable()
+    private void ApplyCardSelectionVisual(Card card)
     {
-        flpTableCards.SuspendLayout();
-        flpTableCards.Controls.Clear();
+        if (!handCardPanels.TryGetValue(card, out var panel))
+            return;
 
-        foreach (var card in game.TableCards.TakeLast(12))
-            flpTableCards.Controls.Add(CreateCardControl(card, false));
+        bool selected = selectedCards.Contains(card);
 
-        flpTableCards.ResumeLayout();
+        panel.Margin = selected
+            ? new Padding(3, 2, 3, 18)
+            : new Padding(3, 18, 3, 2);
+
+        panel.BackColor = selected
+            ? Color.FromArgb(255, 244, 204)
+            : Color.White;
     }
 
-    private void RenderHand()
+    private void UpdateSelectionLabel()
     {
-        flpHand.SuspendLayout();
-        flpHand.Controls.Clear();
-
-        foreach (var card in game.Players[0].Hand)
+        if (!game.ExchangeCompleted)
         {
-            var panel = CreateCardControl(card, true);
-
-            if (selectedCards.Contains(card))
-            {
-                panel.Margin = new Padding(3, 2, 3, 18);
-                panel.BackColor = Color.FromArgb(255, 240, 190);
-            }
-
-            flpHand.Controls.Add(panel);
+            lblSelection.Text =
+                $"{selectedCards.Count}/3 cards selected for exchange.";
+            return;
         }
 
-        flpHand.ResumeLayout();
+        if (selectedCards.Count == 0)
+        {
+            lblSelection.Text =
+                "Select cards. Use BOMB for a valid bomb, even out of turn.";
+            return;
+        }
+
+        double previousSingle = game.TableCombination?.Type == ComboType.Single
+            ? game.TableCombination.Value
+            : 0;
+
+        var combo = CombinationEvaluator.Evaluate(
+            selectedCards.ToList(),
+            previousSingle);
+
+        lblSelection.Text = combo.Type == ComboType.Invalid
+            ? $"{selectedCards.Count} selected • invalid combination"
+            : $"{selectedCards.Count} selected • {FriendlyCombo(combo.Type)}";
     }
 
-    private Control CreateCardControl(Card card, bool selectable)
+    private Panel CreateCardControl(Card card, bool selectable)
     {
         var panel = new Panel
         {
@@ -162,10 +294,10 @@ public partial class MainForm : Form
             Tag = card
         };
 
-        var lblRank = new Label
+        var rank = new Label
         {
             Width = 58,
-            Height = 32,
+            Height = 30,
             Left = 4,
             Top = 5,
             Text = card.RankText,
@@ -174,15 +306,16 @@ public partial class MainForm : Form
                 card.IsSpecial ? 9F : 14F,
                 FontStyle.Bold),
             ForeColor = CardColor(card),
-            TextAlign = ContentAlignment.MiddleCenter
+            TextAlign = ContentAlignment.MiddleCenter,
+            BackColor = Color.Transparent
         };
 
-        var lblSuit = new Label
+        var suit = new Label
         {
             Width = 58,
-            Height = 58,
+            Height = 62,
             Left = 4,
-            Top = 42,
+            Top = 40,
             Text = card.IsSpecial
                 ? SpecialSymbol(card)
                 : card.SuitSymbol,
@@ -191,18 +324,20 @@ public partial class MainForm : Form
                 card.IsSpecial ? 19F : 27F,
                 FontStyle.Bold),
             ForeColor = CardColor(card),
-            TextAlign = ContentAlignment.MiddleCenter
+            TextAlign = ContentAlignment.MiddleCenter,
+            BackColor = Color.Transparent
         };
 
-        panel.Controls.Add(lblRank);
-        panel.Controls.Add(lblSuit);
+        panel.Controls.Add(rank);
+        panel.Controls.Add(suit);
 
         if (selectable)
         {
             void Toggle(object? _, EventArgs __) => ToggleCard(card);
+
             panel.Click += Toggle;
-            lblRank.Click += Toggle;
-            lblSuit.Click += Toggle;
+            rank.Click += Toggle;
+            suit.Click += Toggle;
         }
 
         return panel;
@@ -217,7 +352,7 @@ public partial class MainForm : Form
 
         return card.Suit is Suit.Pagoda or Suit.Star
             ? Color.Firebrick
-            : Color.FromArgb(25, 25, 25);
+            : Color.FromArgb(24, 24, 24);
     }
 
     private static string SpecialSymbol(Card card) => card.Special switch
@@ -229,69 +364,6 @@ public partial class MainForm : Form
         _ => ""
     };
 
-    private void ToggleCard(Card card)
-    {
-        if (game.RoundOver)
-            return;
-
-        if (!selectedCards.Add(card))
-            selectedCards.Remove(card);
-
-        if (!game.ExchangeCompleted && selectedCards.Count > 3)
-        {
-            selectedCards.Remove(card);
-            MessageBox.Show(
-                "During the exchange, select exactly 3 cards.",
-                "Exchange",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
-        }
-
-        RenderHand();
-        UpdateHint();
-        RefreshButtonsOnly();
-    }
-
-    private void UpdateHint()
-    {
-        if (!game.ExchangeCompleted)
-        {
-            lblHint.Text =
-                $"{selectedCards.Count}/3 selected for exchange.";
-            return;
-        }
-
-        if (selectedCards.Count == 0)
-        {
-            lblHint.Text =
-                "Select cards. BOMB may also be used out of turn.";
-            return;
-        }
-
-        double prev = game.TableCombination?.Type == ComboType.Single
-            ? game.TableCombination.Value
-            : 0;
-
-        var combo = CombinationEvaluator.Evaluate(
-            selectedCards.ToList(),
-            prev);
-
-        lblHint.Text = combo.Type == ComboType.Invalid
-            ? $"{selectedCards.Count} selected • invalid combination"
-            : $"{selectedCards.Count} selected • {combo.Type} • value {combo.Value}";
-    }
-
-    private void RefreshButtonsOnly()
-    {
-        btnExchange.Enabled =
-            !game.ExchangeCompleted && selectedCards.Count == 3;
-
-        btnBomb.Enabled =
-            game.ExchangeCompleted &&
-            !game.RoundOver &&
-            selectedCards.Count > 0;
-    }
-
     private int? AskMahJongWishIfNeeded(IEnumerable<Card> cards)
     {
         if (!cards.Any(c => c.Special == SpecialCard.MahJong))
@@ -301,7 +373,7 @@ public partial class MainForm : Form
         {
             Text = "Mah Jong Wish",
             StartPosition = FormStartPosition.CenterParent,
-            ClientSize = new Size(300, 150),
+            ClientSize = new Size(300, 155),
             FormBorderStyle = FormBorderStyle.FixedDialog,
             MaximizeBox = false,
             MinimizeBox = false
@@ -323,8 +395,8 @@ public partial class MainForm : Form
             DropDownStyle = ComboBoxStyle.DropDownList
         };
 
-        for (int r = 2; r <= 14; r++)
-            combo.Items.Add(new RankChoice(r));
+        for (int rank = 2; rank <= 14; rank++)
+            combo.Items.Add(new RankChoice(rank));
 
         combo.SelectedIndex = 0;
 
@@ -332,7 +404,7 @@ public partial class MainForm : Form
         {
             Text = "Wish",
             Left = 170,
-            Top = 95,
+            Top = 100,
             Width = 100,
             DialogResult = DialogResult.OK
         };
@@ -342,38 +414,41 @@ public partial class MainForm : Form
         dialog.Controls.Add(ok);
         dialog.AcceptButton = ok;
 
-        if (dialog.ShowDialog(this) != DialogResult.OK)
-            return 2;
-
-        return ((RankChoice)combo.SelectedItem!).Rank;
+        return dialog.ShowDialog(this) == DialogResult.OK
+            ? ((RankChoice)combo.SelectedItem!).Rank
+            : null;
     }
 
     private void btnPlay_Click(object? sender, EventArgs e)
     {
-        if (game.CurrentPlayerIndex != 0 ||
-            !game.ExchangeCompleted)
+        if (game.CurrentPlayerIndex != 0 || !game.ExchangeCompleted)
             return;
 
         var cards = selectedCards.ToList();
+
+        if (cards.Count == 0)
+            return;
+
         int? wish = AskMahJongWishIfNeeded(cards);
 
-        if (!game.TryPlayCards(
-                0,
-                cards,
-                out string error,
-                wish,
-                false))
+        if (cards.Any(c => c.Special == SpecialCard.MahJong) && wish is null)
+            return;
+
+        if (!game.TryPlayCards(0, cards, out string error, wish))
         {
-            MessageBox.Show(
-                error,
-                "Invalid play",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo(error);
             return;
         }
 
         selectedCards.Clear();
-        RefreshUi();
+
+        // Human hand changed -> rebuild hand once.
+        RenderHumanHand();
+
+        // Latest table play changed -> rebuild only center cards.
+        RenderCurrentPlay();
+
+        UpdateAllStatus();
         BeginBotsIfNeeded();
     }
 
@@ -381,34 +456,31 @@ public partial class MainForm : Form
     {
         if (!game.TryPass(0, out string error))
         {
-            MessageBox.Show(
-                error,
-                "Cannot pass",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo(error);
             return;
         }
 
         selectedCards.Clear();
-        RefreshUi();
+        ClearSelectionVisuals();
+
+        RenderCurrentPlay();
+        UpdateAllStatus();
+
         BeginBotsIfNeeded();
     }
 
     private void btnBomb_Click(object? sender, EventArgs e)
     {
-        if (!game.ExchangeCompleted || selectedCards.Count == 0)
+        var cards = selectedCards.ToList();
+
+        if (cards.Count == 0)
             return;
 
-        var cards = selectedCards.ToList();
         var combo = CombinationEvaluator.Evaluate(cards);
 
         if (!combo.IsBomb)
         {
-            MessageBox.Show(
-                "The selected cards are not a bomb.",
-                "Bomb",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo("The selected cards are not a bomb.");
             return;
         }
 
@@ -421,16 +493,15 @@ public partial class MainForm : Form
                 null,
                 outOfTurn))
         {
-            MessageBox.Show(
-                error,
-                "Bomb",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo(error);
             return;
         }
 
         selectedCards.Clear();
-        RefreshUi();
+        RenderHumanHand();
+        RenderCurrentPlay();
+        UpdateAllStatus();
+
         BeginBotsIfNeeded();
     }
 
@@ -439,9 +510,7 @@ public partial class MainForm : Form
         if (selectedCards.Count != 3)
             return;
 
-        var selected = selectedCards.ToList();
-
-        using var dialog = new ExchangeAssignmentForm(selected);
+        using var dialog = new ExchangeAssignmentForm(selectedCards.ToList());
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
@@ -452,16 +521,16 @@ public partial class MainForm : Form
                 dialog.ToRight!,
                 out string error))
         {
-            MessageBox.Show(
-                error,
-                "Exchange",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo(error);
             return;
         }
 
         selectedCards.Clear();
-        RefreshUi();
+
+        RenderHumanHand();
+        RenderCurrentPlay();
+        UpdateAllStatus();
+
         BeginBotsIfNeeded();
     }
 
@@ -469,30 +538,24 @@ public partial class MainForm : Form
     {
         if (!game.CallTichu(0, out string error))
         {
-            MessageBox.Show(
-                error,
-                "Tichu",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo(error);
             return;
         }
 
-        RefreshUi();
+        UpdatePlayerStatusLabels();
+        UpdateButtons();
     }
 
     private void btnGrandTichu_Click(object? sender, EventArgs e)
     {
         if (!game.CallGrandTichu(0, out string error))
         {
-            MessageBox.Show(
-                error,
-                "Grand Tichu",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            ShowInfo(error);
             return;
         }
 
-        RefreshUi();
+        UpdatePlayerStatusLabels();
+        UpdateButtons();
     }
 
     private void btnNewRound_Click(object? sender, EventArgs e)
@@ -500,7 +563,7 @@ public partial class MainForm : Form
         if (game.MatchOver)
         {
             var answer = MessageBox.Show(
-                "A team has reached 1000 points. Start a new match?",
+                "Start a new match from 0 - 0?",
                 "New Match",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Question);
@@ -530,69 +593,71 @@ public partial class MainForm : Form
                    game.ExchangeCompleted &&
                    game.CurrentPlayerIndex != 0)
             {
-                // Give every other bot a chance to interrupt with a bomb.
+                // Bots may bomb out of turn.
                 bool interrupted = false;
 
-                for (int i = 1; i < 4; i++)
+                for (int bot = 1; bot < 4; bot++)
                 {
-                    if (i == game.CurrentPlayerIndex ||
-                        game.Players[i].IsOut)
+                    if (bot == game.CurrentPlayerIndex ||
+                        game.Players[bot].IsOut)
                         continue;
 
-                    var bomb = game.ChooseBotOutOfTurnBomb(i);
+                    var bomb = game.ChooseBotOutOfTurnBomb(bot);
 
-                    if (bomb is not null)
+                    if (bomb is null)
+                        continue;
+
+                    await Task.Delay(180);
+
+                    if (game.TryPlayCards(bot, bomb, out _, null, true))
                     {
-                        await Task.Delay(250);
+                        interrupted = true;
 
-                        if (game.TryPlayCards(
-                                i,
-                                bomb,
-                                out _,
-                                null,
-                                true))
-                        {
-                            interrupted = true;
-                            RefreshUi();
-                            break;
-                        }
+                        // Only update the controls that changed.
+                        RenderCurrentPlay();
+                        UpdatePlayerStatusLabels();
+                        UpdateTableStatus();
+                        UpdateButtons();
+
+                        break;
                     }
                 }
 
                 if (interrupted)
                     continue;
 
-                await Task.Delay(450);
+                await Task.Delay(420);
 
-                int bot = game.CurrentPlayerIndex;
-                var chosen = game.ChooseBotPlay(bot);
+                int currentBot = game.CurrentPlayerIndex;
+                var play = game.ChooseBotPlay(currentBot);
 
-                if (chosen is not null)
+                if (play is not null)
                 {
-                    int? wish = null;
-
-                    if (chosen.Any(c =>
-                            c.Special == SpecialCard.MahJong))
-                    {
-                        wish = ChooseBotWish(bot);
-                    }
+                    int? wish = play.Any(c => c.Special == SpecialCard.MahJong)
+                        ? ChooseBotWish(currentBot)
+                        : null;
 
                     if (!game.TryPlayCards(
-                            bot,
-                            chosen,
+                            currentBot,
+                            play,
                             out _,
-                            wish,
-                            false))
+                            wish))
                     {
-                        game.TryPass(bot, out _);
+                        game.TryPass(currentBot, out _);
                     }
                 }
                 else
                 {
-                    game.TryPass(bot, out _);
+                    game.TryPass(currentBot, out _);
                 }
 
-                RefreshUi();
+                // Human hand did not change during a bot move.
+                // Do NOT rebuild it.
+                RenderCurrentPlay();
+                UpdateScores();
+                UpdatePlayerStatusLabels();
+                UpdateTableStatus();
+                UpdateButtons();
             }
         }
         finally
@@ -603,22 +668,36 @@ public partial class MainForm : Form
 
     private int ChooseBotWish(int botIndex)
     {
-        var hand = game.Players[botIndex].Hand;
-
-        // Wish for a rank the bot doesn't currently hold,
-        // prioritising middle/high ranks.
-        var held = hand
+        var held = game.Players[botIndex].Hand
             .Where(c => !c.IsSpecial)
             .Select(c => c.Rank)
             .ToHashSet();
 
-        for (int r = 14; r >= 6; r--)
-        {
-            if (!held.Contains(r))
-                return r;
-        }
+        for (int rank = 14; rank >= 6; rank--)
+            if (!held.Contains(rank))
+                return rank;
 
         return 14;
+    }
+
+    private void ClearSelectionVisuals()
+    {
+        foreach (var card in selectedCards.ToList())
+        {
+            selectedCards.Remove(card);
+            ApplyCardSelectionVisual(card);
+        }
+
+        UpdateSelectionLabel();
+    }
+
+    private void ShowInfo(string text)
+    {
+        MessageBox.Show(
+            text,
+            "Tichu",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
     }
 
     private sealed class RankChoice
@@ -630,8 +709,7 @@ public partial class MainForm : Form
             Rank = rank;
         }
 
-        public override string ToString() =>
-            TichuGame.RankName(Rank);
+        public override string ToString() => TichuGame.RankName(Rank);
     }
 }
 
@@ -647,7 +725,7 @@ internal sealed class ExchangeAssignmentForm : Form
 
     public ExchangeAssignmentForm(List<Card> cards)
     {
-        Text = "Assign Exchange Cards";
+        Text = "Exchange Cards";
         StartPosition = FormStartPosition.CenterParent;
         ClientSize = new Size(390, 245);
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -656,7 +734,7 @@ internal sealed class ExchangeAssignmentForm : Form
 
         Controls.Add(new Label
         {
-            Text = "Choose who receives each selected card:",
+            Text = "Assign one selected card to each player:",
             Left = 20,
             Top = 18,
             Width = 340
@@ -670,7 +748,7 @@ internal sealed class ExchangeAssignmentForm : Form
         cmbPartner.SelectedIndex = 1;
         cmbRight.SelectedIndex = 2;
 
-        var ok = new Button
+        var confirm = new Button
         {
             Text = "Exchange",
             Left = 250,
@@ -678,7 +756,7 @@ internal sealed class ExchangeAssignmentForm : Form
             Width = 110
         };
 
-        ok.Click += (_, _) =>
+        confirm.Click += (_, _) =>
         {
             var left = (Card)cmbLeft.SelectedItem!;
             var partner = (Card)cmbPartner.SelectedItem!;
@@ -687,32 +765,34 @@ internal sealed class ExchangeAssignmentForm : Form
             if (new[] { left, partner, right }.Distinct().Count() != 3)
             {
                 MessageBox.Show(
-                    "Each recipient must receive a different card.",
+                    "Each player must receive a different card.",
                     "Exchange",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
+
                 return;
             }
 
             ToLeft = left;
             ToPartner = partner;
             ToRight = right;
+
             DialogResult = DialogResult.OK;
             Close();
         };
 
-        Controls.Add(ok);
+        Controls.Add(confirm);
     }
 
     private void SetupRow(
-        string text,
+        string title,
         ComboBox combo,
         int top,
         List<Card> cards)
     {
         Controls.Add(new Label
         {
-            Text = text,
+            Text = title,
             Left = 20,
             Top = top + 4,
             Width = 90
@@ -723,8 +803,8 @@ internal sealed class ExchangeAssignmentForm : Form
         combo.Width = 245;
         combo.DropDownStyle = ComboBoxStyle.DropDownList;
 
-        foreach (var c in cards)
-            combo.Items.Add(c);
+        foreach (var card in cards)
+            combo.Items.Add(card);
 
         Controls.Add(combo);
     }

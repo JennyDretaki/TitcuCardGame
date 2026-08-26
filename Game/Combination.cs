@@ -1,6 +1,6 @@
-using TichuWinForms.Models;
+using TichuWinForms_Smooth.Models;
 
-namespace TichuWinForms.Game;
+namespace TichuWinForms_Smooth.Game;
 
 public enum ComboType
 {
@@ -24,10 +24,4 @@ public sealed class Combination
     public List<Card> Cards { get; init; } = new();
 
     public bool IsBomb => Type is ComboType.FourBomb or ComboType.StraightFlushBomb;
-
-    public override string ToString()
-    {
-        if (Type == ComboType.Invalid) return "Invalid";
-        return $"{Type} ({string.Join(" ", Cards)})";
-    }
 }

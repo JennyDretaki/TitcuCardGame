@@ -1,6 +1,6 @@
-using TichuWinForms.Models;
+using TichuWinForms_Smooth.Models;
 
-namespace TichuWinForms.Game;
+namespace TichuWinForms_Smooth.Game;
 
 public static class DeckFactory
 {
@@ -8,9 +8,7 @@ public static class DeckFactory
     {
         var cards = new List<Card>();
 
-        var suits = new[] { Suit.Jade, Suit.Sword, Suit.Pagoda, Suit.Star };
-
-        foreach (var suit in suits)
+        foreach (var suit in new[] { Suit.Jade, Suit.Sword, Suit.Pagoda, Suit.Star })
         {
             for (int rank = 2; rank <= 14; rank++)
             {

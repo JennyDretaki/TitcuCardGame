@@ -1,4 +1,4 @@
-namespace TichuWinForms;
+namespace TichuWinForms_Smooth;
 
 internal static class Program
 {

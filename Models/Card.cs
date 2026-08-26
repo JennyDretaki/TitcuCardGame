@@ -1,4 +1,4 @@
-namespace TichuWinForms.Models;
+namespace TichuWinForms_Smooth.Models;
 
 public enum Suit
 {
@@ -21,7 +21,7 @@ public enum SpecialCard
 public sealed class Card
 {
     public Suit Suit { get; init; }
-    public int Rank { get; init; } // 2..14; MahJong=1; specials handled separately
+    public int Rank { get; init; }
     public SpecialCard Special { get; init; }
 
     public bool IsSpecial => Special != SpecialCard.None;

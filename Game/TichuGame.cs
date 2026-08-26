@@ -1,30 +1,33 @@
-using TichuWinForms.Models;
+using TichuWinForms_Smooth.Models;
 
-namespace TichuWinForms.Game;
+namespace TichuWinForms_Smooth.Game;
 
 public sealed class TichuGame
 {
     private readonly Random random = new();
+    private readonly List<Card> trickPile = new();
 
     private int passesInRow;
     private int lastPlayerWhoPlayed = -1;
 
     public List<Player> Players { get; } = new();
+
     public int CurrentPlayerIndex { get; private set; }
+    public int? LastPlayPlayerIndex { get; private set; }
+
     public Combination? TableCombination { get; private set; }
-    public List<Card> TableCards { get; } = new();
+
+    // Only the most recent play. This is what the UI renders.
+    public List<Card> CurrentPlayCards { get; } = new();
 
     public int[] TeamScores { get; } = new int[2];
+
     public int FinishCounter { get; private set; }
     public bool RoundOver { get; private set; }
     public bool MatchOver => TeamScores[0] >= 1000 || TeamScores[1] >= 1000;
 
     public bool ExchangeCompleted { get; private set; }
-    public bool HumanMayCallGrandTichu { get; private set; }
-
     public int? MahJongWishRank { get; private set; }
-
-    public event Action<string>? Message;
 
     public TichuGame()
     {
@@ -36,20 +39,23 @@ public sealed class TichuGame
 
     public void StartRound()
     {
-        foreach (var p in Players)
+        foreach (var player in Players)
         {
-            p.Hand.Clear();
-            p.Captured.Clear();
-            p.FinishOrder = 0;
-            p.CalledTichu = false;
-            p.CalledGrandTichu = false;
-            p.HasPlayedAnyCard = false;
+            player.Hand.Clear();
+            player.Captured.Clear();
+            player.FinishOrder = 0;
+            player.CalledTichu = false;
+            player.CalledGrandTichu = false;
+            player.HasPlayedAnyCard = false;
         }
 
-        TableCards.Clear();
+        trickPile.Clear();
+        CurrentPlayCards.Clear();
         TableCombination = null;
+
         passesInRow = 0;
         lastPlayerWhoPlayed = -1;
+        LastPlayPlayerIndex = null;
         FinishCounter = 0;
         RoundOver = false;
         ExchangeCompleted = false;
@@ -58,117 +64,87 @@ public sealed class TichuGame
         var deck = DeckFactory.CreateDeck();
         DeckFactory.Shuffle(deck, random);
 
-        // Deal first 8 cards to everyone.
+        // First 8 cards for Grand Tichu decision.
         for (int i = 0; i < 32; i++)
             Players[i % 4].Hand.Add(deck[i]);
 
-        foreach (var p in Players)
-            SortHand(p.Hand);
+        foreach (var player in Players)
+            SortHand(player.Hand);
 
-        HumanMayCallGrandTichu = true;
-
-        // Bots decide Grand Tichu from first 8 cards.
         for (int i = 1; i < 4; i++)
         {
             if (ShouldBotCallGrandTichu(Players[i]))
-            {
                 Players[i].CalledGrandTichu = true;
-                Message?.Invoke($"{Players[i].Name} called GRAND TICHU!");
-            }
         }
 
-        // Complete the deal to 14 cards each.
+        // Finish deal to 14 cards.
         for (int i = 32; i < deck.Count; i++)
             Players[i % 4].Hand.Add(deck[i]);
 
-        foreach (var p in Players)
-            SortHand(p.Hand);
+        foreach (var player in Players)
+            SortHand(player.Hand);
 
-        HumanMayCallGrandTichu = false;
-        CurrentPlayerIndex = Players.FindIndex(p =>
-            p.Hand.Any(c => c.Special == SpecialCard.MahJong));
-
-        Message?.Invoke("Cards dealt. Select exactly 3 cards for the exchange.");
+        CurrentPlayerIndex = Players.FindIndex(
+            p => p.Hand.Any(c => c.Special == SpecialCard.MahJong));
     }
 
     public static void SortHand(List<Card> hand)
     {
         hand.Sort((a, b) =>
         {
-            int av = SortValue(a);
-            int bv = SortValue(b);
-            int cmp = av.CompareTo(bv);
-            return cmp != 0 ? cmp : a.Suit.CompareTo(b.Suit);
+            int first = SortValue(a).CompareTo(SortValue(b));
+            return first != 0 ? first : a.Suit.CompareTo(b.Suit);
         });
     }
 
-    public static int SortValue(Card c) => c.Special switch
+    public static int SortValue(Card card) => card.Special switch
     {
         SpecialCard.Dog => 0,
         SpecialCard.MahJong => 1,
         SpecialCard.Phoenix => 15,
         SpecialCard.Dragon => 16,
-        _ => c.Rank
+        _ => card.Rank
     };
 
     public bool CallGrandTichu(int playerIndex, out string error)
     {
         error = "";
+        var player = Players[playerIndex];
 
-        if (playerIndex != 0)
+        if (ExchangeCompleted)
         {
-            error = "Only the human player calls Grand Tichu from the UI.";
+            error = "Grand Tichu must be called before the exchange is completed.";
             return false;
         }
 
-        var p = Players[playerIndex];
-
-        if (!HumanMayCallGrandTichu)
+        if (player.CalledGrandTichu || player.CalledTichu)
         {
-            // Usability concession: allow it until exchange is complete.
-            if (ExchangeCompleted)
-            {
-                error = "Grand Tichu is no longer available.";
-                return false;
-            }
-        }
-
-        if (p.CalledGrandTichu || p.CalledTichu)
-        {
-            error = "You already called Tichu / Grand Tichu.";
+            error = "A declaration has already been made.";
             return false;
         }
 
-        if (p.HasPlayedAnyCard)
-        {
-            error = "Grand Tichu must be called before playing.";
-            return false;
-        }
-
-        p.CalledGrandTichu = true;
-        Message?.Invoke($"{p.Name} called GRAND TICHU!");
+        player.CalledGrandTichu = true;
         return true;
     }
 
     public bool CallTichu(int playerIndex, out string error)
     {
         error = "";
-        var p = Players[playerIndex];
+        var player = Players[playerIndex];
 
-        if (p.HasPlayedAnyCard)
+        if (player.HasPlayedAnyCard)
         {
-            error = "Tichu must be called before playing your first card.";
+            error = "Tichu must be called before your first play.";
             return false;
         }
 
-        if (p.CalledTichu || p.CalledGrandTichu)
+        if (player.CalledTichu || player.CalledGrandTichu)
         {
-            error = "A Tichu declaration has already been made.";
+            error = "A declaration has already been made.";
             return false;
         }
 
-        p.CalledTichu = true;
-        Message?.Invoke($"{p.Name} called TICHU!");
+        player.CalledTichu = true;
         return true;
     }
 
@@ -182,20 +158,21 @@ public sealed class TichuGame
 
         if (ExchangeCompleted)
         {
-            error = "The exchange is already complete.";
+            error = "Exchange is already complete.";
             return false;
         }
 
         var human = Players[0];
-        var chosen = new[] { toLeft, toPartner, toRight };
+        var selected = new[] { toLeft, toPartner, toRight };
 
-        if (chosen.Distinct().Count() != 3 || chosen.Any(c => !human.Hand.Contains(c)))
+        if (selected.Distinct().Count() != 3 ||
+            selected.Any(c => !human.Hand.Contains(c)))
         {
-            error = "Select three different cards from your hand.";
+            error = "Choose three different cards from your hand.";
             return false;
         }
 
-        var outgoing = new Dictionary<(int from, int to), Card>
+        var outgoing = new Dictionary<(int From, int To), Card>
         {
             [(0, 1)] = toLeft,
             [(0, 2)] = toPartner,
@@ -206,98 +183,26 @@ public sealed class TichuGame
         {
             var gifts = ChooseBotExchangeCards(from);
 
-            int left = (from + 1) % 4;
-            int partner = (from + 2) % 4;
-            int right = (from + 3) % 4;
-
-            outgoing[(from, left)] = gifts.left;
-            outgoing[(from, partner)] = gifts.partner;
-            outgoing[(from, right)] = gifts.right;
+            outgoing[(from, (from + 1) % 4)] = gifts.Left;
+            outgoing[(from, (from + 2) % 4)] = gifts.Partner;
+            outgoing[(from, (from + 3) % 4)] = gifts.Right;
         }
 
-        foreach (var x in outgoing)
-            Players[x.Key.from].Hand.Remove(x.Value);
+        foreach (var pair in outgoing)
+            Players[pair.Key.From].Hand.Remove(pair.Value);
 
-        foreach (var x in outgoing)
-            Players[x.Key.to].Hand.Add(x.Value);
+        foreach (var pair in outgoing)
+            Players[pair.Key.To].Hand.Add(pair.Value);
 
-        foreach (var p in Players)
-            SortHand(p.Hand);
+        foreach (var player in Players)
+            SortHand(player.Hand);
 
         ExchangeCompleted = true;
 
         CurrentPlayerIndex = Players.FindIndex(
             p => p.Hand.Any(c => c.Special == SpecialCard.MahJong));
 
-        Message?.Invoke("3-card exchange completed.");
-        Message?.Invoke($"{Players[CurrentPlayerIndex].Name} starts with Mah Jong.");
         return true;
-    }
-
-    private (Card left, Card partner, Card right) ChooseBotExchangeCards(int playerIndex)
-    {
-        var p = Players[playerIndex];
-        var cards = p.Hand.ToList();
-
-        // AI principle:
-        // - preserve bombs, Phoenix, Dragon and strong pair/triple structure
-        // - send weakest isolated cards to opponents
-        // - give partner a useful medium/high card if possible
-
-        var protectedCards = FindStrategicProtectedCards(cards);
-        var available = cards.Where(c => !protectedCards.Contains(c)).ToList();
-
-        if (available.Count < 3)
-            available = cards.ToList();
-
-        double Weakness(Card c)
-        {
-            double value = SortValue(c);
-
-            if (c.Special == SpecialCard.Dog) return -20;
-            if (c.Special == SpecialCard.MahJong) return -10;
-            if (c.Special == SpecialCard.Phoenix) return 100;
-            if (c.Special == SpecialCard.Dragon) return 110;
-
-            int sameRank = cards.Count(x => !x.IsSpecial && x.Rank == c.Rank);
-            if (sameRank >= 2) value += 8;
-
-            return value;
-        }
-
-        var ordered = available.OrderBy(Weakness).ToList();
-
-        Card left = ordered[0];
-        Card right = ordered.Count > 1 ? ordered[1] : cards.First(c => c != left);
-
-        var partnerCandidates = cards
-            .Where(c => c != left && c != right)
-            .Where(c => c.Special is not SpecialCard.Phoenix and not SpecialCard.Dragon)
-            .OrderByDescending(c => SortValue(c))
-            .ToList();
-
-        Card partner = partnerCandidates.FirstOrDefault()
-            ?? cards.First(c => c != left && c != right);
-
-        return (left, partner, right);
-    }
-
-    private static HashSet<Card> FindStrategicProtectedCards(List<Card> cards)
-    {
-        var protectedCards = new HashSet<Card>();
-
-        foreach (var g in cards.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
-        {
-            if (g.Count() >= 2)
-                foreach (var c in g)
-                    protectedCards.Add(c);
-        }
-
-        foreach (var c in cards.Where(c =>
-                     c.Special is SpecialCard.Phoenix or SpecialCard.Dragon))
-            protectedCards.Add(c);
-
-        return protectedCards;
     }
 
     public bool TryPlayCards(
@@ -317,7 +222,7 @@ public sealed class TichuGame
 
         if (RoundOver)
         {
-            error = "The round has finished.";
+            error = "The round is over.";
             return false;
         }
 
@@ -343,13 +248,13 @@ public sealed class TichuGame
 
         if (combo.Type == ComboType.Invalid)
         {
-            error = "That is not a valid Tichu combination.";
+            error = "This is not a valid Tichu combination.";
             return false;
         }
 
         if (outOfTurnBomb && !combo.IsBomb)
         {
-            error = "Only a bomb may be played out of turn.";
+            error = "Only a bomb can be played out of turn.";
             return false;
         }
 
@@ -357,7 +262,7 @@ public sealed class TichuGame
             CanSatisfyWish(playerIndex, MahJongWishRank.Value) &&
             !ContainsWish(selected, MahJongWishRank.Value))
         {
-            error = $"Mah Jong wish is active. You must play rank {RankName(MahJongWishRank.Value)} if possible.";
+            error = $"You must satisfy the Mah Jong wish ({RankName(MahJongWishRank.Value)}) if possible.";
             return false;
         }
 
@@ -365,23 +270,26 @@ public sealed class TichuGame
         {
             if (TableCombination is not null)
             {
-                error = "Dog can only be played as the lead.";
+                error = "Dog can only be played when leading.";
                 return false;
             }
 
             player.Hand.Remove(selected[0]);
             player.HasPlayedAnyCard = true;
 
-            Message?.Invoke($"{player.Name} played Dog.");
+            // UI shows Dog briefly as the latest play.
+            CurrentPlayCards.Clear();
+            CurrentPlayCards.Add(selected[0]);
+            LastPlayPlayerIndex = playerIndex;
+
             CheckPlayerOut(playerIndex);
 
-            TableCards.Clear();
+            trickPile.Clear();
             TableCombination = null;
             passesInRow = 0;
             lastPlayerWhoPlayed = -1;
 
             CurrentPlayerIndex = NextActivePlayer((playerIndex + 2) % 4);
-            Message?.Invoke($"Lead passes to {Players[CurrentPlayerIndex].Name}.");
             return true;
         }
 
@@ -389,7 +297,7 @@ public sealed class TichuGame
         {
             error = TableCombination is null
                 ? "Invalid lead."
-                : $"Your play must beat {TableCombination.Type} ({TableCombination.Value}).";
+                : $"You must beat {TableCombination.Type} ({TableCombination.Value}).";
             return false;
         }
 
@@ -398,36 +306,25 @@ public sealed class TichuGame
         foreach (var card in selected)
             player.Hand.Remove(card);
 
-        if (outOfTurnBomb)
-        {
-            // Bomb interrupts immediately and takes control of the trick.
-            Message?.Invoke($"{player.Name} INTERRUPTED with a BOMB!");
-            passesInRow = 0;
-        }
+        // Keep every played card internally for trick scoring.
+        trickPile.AddRange(selected);
 
-        TableCards.AddRange(selected);
+        // But render ONLY the latest play.
+        CurrentPlayCards.Clear();
+        CurrentPlayCards.AddRange(selected);
+
         TableCombination = combo;
         lastPlayerWhoPlayed = playerIndex;
+        LastPlayPlayerIndex = playerIndex;
         passesInRow = 0;
         player.HasPlayedAnyCard = true;
 
         if (playedMahJong && mahJongWish is >= 2 and <= 14)
-        {
             MahJongWishRank = mahJongWish;
-            Message?.Invoke(
-                $"{player.Name} wishes for {RankName(mahJongWish.Value)}.");
-        }
 
         if (MahJongWishRank.HasValue &&
             ContainsWish(selected, MahJongWishRank.Value))
-        {
-            Message?.Invoke(
-                $"Mah Jong wish for {RankName(MahJongWishRank.Value)} was fulfilled.");
             MahJongWishRank = null;
-        }
-
-        Message?.Invoke(
-            $"{player.Name} played {combo.Type}: {string.Join(" ", selected)}");
 
         CheckPlayerOut(playerIndex);
 
@@ -462,11 +359,10 @@ public sealed class TichuGame
         if (MahJongWishRank.HasValue &&
             CanSatisfyWish(playerIndex, MahJongWishRank.Value))
         {
-            error = $"You cannot pass because you can satisfy the Mah Jong wish ({RankName(MahJongWishRank.Value)}).";
+            error = $"You can satisfy the Mah Jong wish ({RankName(MahJongWishRank.Value)}), so you cannot pass.";
             return false;
         }
 
-        Message?.Invoke($"{Players[playerIndex].Name} passed.");
         passesInRow++;
 
         int activePlayers = Players.Count(p => !p.IsOut);
@@ -488,27 +384,24 @@ public sealed class TichuGame
 
         var winner = Players[lastPlayerWhoPlayed];
 
-        // MVP behaviour: Dragon trick is automatically given to the opponent
-        // with fewer cards. This isn't one of the requested new features.
-        if (TableCards.Any(c => c.Special == SpecialCard.Dragon))
+        if (trickPile.Any(c => c.Special == SpecialCard.Dragon))
         {
-            var opponents = Players
+            var receiver = Players
                 .Where(p => p.Team != winner.Team)
                 .OrderBy(p => p.Hand.Count)
-                .ToList();
+                .First();
 
-            opponents[0].Captured.AddRange(TableCards);
-            Message?.Invoke(
-                $"{winner.Name} won with Dragon; trick given to {opponents[0].Name}.");
+            receiver.Captured.AddRange(trickPile);
         }
         else
         {
-            winner.Captured.AddRange(TableCards);
-            Message?.Invoke($"{winner.Name} won the trick.");
+            winner.Captured.AddRange(trickPile);
         }
 
-        TableCards.Clear();
+        trickPile.Clear();
+        CurrentPlayCards.Clear();
         TableCombination = null;
+        LastPlayPlayerIndex = null;
         passesInRow = 0;
 
         CurrentPlayerIndex = winner.IsOut
@@ -522,9 +415,10 @@ public sealed class TichuGame
     {
         for (int offset = 0; offset < 4; offset++)
         {
-            int idx = (start + offset) % 4;
-            if (!Players[idx].IsOut)
-                return idx;
+            int index = (start + offset) % 4;
+
+            if (!Players[index].IsOut)
+                return index;
         }
 
         return start;
@@ -539,7 +433,6 @@ public sealed class TichuGame
 
         FinishCounter++;
         player.FinishOrder = FinishCounter;
-        Message?.Invoke($"{player.Name} finished #{FinishCounter}.");
 
         if (FinishCounter == 2)
         {
@@ -549,10 +442,8 @@ public sealed class TichuGame
             if (first.Team == second.Team)
             {
                 TeamScores[first.Team] += 200;
-                ApplyTichuBets();
+                ApplyDeclarations();
                 RoundOver = true;
-                Message?.Invoke(
-                    $"Double victory! Team {first.Team + 1} scores 200.");
                 return;
             }
         }
@@ -569,8 +460,7 @@ public sealed class TichuGame
         var last = Players.First(p => p.FinishOrder == 0);
         var first = Players.First(p => p.FinishOrder == 1);
 
-        int remainingPoints = last.Hand.Sum(c => c.Points);
-        TeamScores[1 - last.Team] += remainingPoints;
+        TeamScores[1 - last.Team] += last.Hand.Sum(c => c.Points);
 
         first.Captured.AddRange(last.Captured);
         last.Captured.Clear();
@@ -583,22 +473,228 @@ public sealed class TichuGame
                 .Sum(c => c.Points);
         }
 
-        ApplyTichuBets();
-        Message?.Invoke("Round scoring completed.");
+        ApplyDeclarations();
     }
 
-    private void ApplyTichuBets()
+    private void ApplyDeclarations()
     {
-        foreach (var p in Players)
+        foreach (var player in Players)
         {
-            if (p.CalledGrandTichu)
-                TeamScores[p.Team] += p.FinishOrder == 1 ? 200 : -200;
-            else if (p.CalledTichu)
-                TeamScores[p.Team] += p.FinishOrder == 1 ? 100 : -100;
+            if (player.CalledGrandTichu)
+                TeamScores[player.Team] += player.FinishOrder == 1 ? 200 : -200;
+            else if (player.CalledTichu)
+                TeamScores[player.Team] += player.FinishOrder == 1 ? 100 : -100;
         }
     }
 
-    // -------------------- MAH JONG WISH --------------------
+    private (Card Left, Card Partner, Card Right) ChooseBotExchangeCards(int playerIndex)
+    {
+        var hand = Players[playerIndex].Hand;
+
+        var protectedCards = new HashSet<Card>();
+
+        foreach (var group in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
+        {
+            if (group.Count() >= 2)
+            {
+                foreach (var card in group)
+                    protectedCards.Add(card);
+            }
+        }
+
+        foreach (var card in hand.Where(c =>
+                     c.Special is SpecialCard.Phoenix or SpecialCard.Dragon))
+            protectedCards.Add(card);
+
+        var available = hand.Where(c => !protectedCards.Contains(c)).ToList();
+
+        if (available.Count < 3)
+            available = hand.ToList();
+
+        double Weakness(Card card)
+        {
+            if (card.Special == SpecialCard.Dog) return -30;
+            if (card.Special == SpecialCard.MahJong) return -20;
+            if (card.Special == SpecialCard.Phoenix) return 100;
+            if (card.Special == SpecialCard.Dragon) return 110;
+
+            double score = SortValue(card);
+
+            if (hand.Count(x => !x.IsSpecial && x.Rank == card.Rank) >= 2)
+                score += 10;
+
+            return score;
+        }
+
+        var weak = available.OrderBy(Weakness).ToList();
+
+        Card left = weak[0];
+        Card right = weak[1];
+
+        Card partner = hand
+            .Where(c => c != left && c != right)
+            .Where(c => c.Special is not SpecialCard.Phoenix and not SpecialCard.Dragon)
+            .OrderByDescending(SortValue)
+            .First();
+
+        return (left, partner, right);
+    }
+
+    public List<Card>? ChooseBotPlay(int playerIndex)
+    {
+        if (TableCombination is null)
+            return ChooseBestLead(playerIndex);
+
+        var legal = FindLegalResponses(playerIndex);
+
+        if (MahJongWishRank.HasValue &&
+            CanSatisfyWish(playerIndex, MahJongWishRank.Value))
+        {
+            legal = legal
+                .Where(c => ContainsWish(c, MahJongWishRank.Value))
+                .ToList();
+        }
+
+        return legal
+            .OrderBy(c => CombinationCost(c, playerIndex))
+            .FirstOrDefault();
+    }
+
+    public List<Card>? ChooseBotOutOfTurnBomb(int playerIndex)
+    {
+        if (!ExchangeCompleted ||
+            RoundOver ||
+            playerIndex == CurrentPlayerIndex ||
+            Players[playerIndex].IsOut)
+            return null;
+
+        var bombs = FindBombs(Players[playerIndex].Hand)
+            .Where(b => CombinationEvaluator.CanBeat(
+                CombinationEvaluator.Evaluate(b), TableCombination))
+            .ToList();
+
+        if (bombs.Count == 0)
+            return null;
+
+        bool opponentDanger = Players.Any(p =>
+            p.Team != Players[playerIndex].Team &&
+            !p.IsOut &&
+            p.Hand.Count <= 3);
+
+        bool selfClose = Players[playerIndex].Hand.Count <= 5;
+
+        if (!opponentDanger && !selfClose && random.NextDouble() > 0.10)
+            return null;
+
+        return bombs
+            .OrderBy(b => CombinationEvaluator.Evaluate(b).CardCount)
+            .ThenBy(b => CombinationEvaluator.Evaluate(b).Value)
+            .First();
+    }
+
+    private List<Card> ChooseBestLead(int playerIndex)
+    {
+        var hand = Players[playerIndex].Hand;
+        var candidates = new List<List<Card>>();
+
+        var dog = hand.FirstOrDefault(c => c.Special == SpecialCard.Dog);
+
+        if (dog is not null &&
+            hand.Count >= 8 &&
+            !Players[(playerIndex + 2) % 4].IsOut)
+            return new List<Card> { dog };
+
+        candidates.AddRange(FindStraights(hand));
+        candidates.AddRange(FindFullHouses(hand));
+        candidates.AddRange(FindTriples(hand));
+        candidates.AddRange(FindPairs(hand));
+        candidates.AddRange(hand.Select(c => new List<Card> { c }));
+
+        return candidates
+            .Where(c => CombinationEvaluator.Evaluate(c).Type != ComboType.Invalid)
+            .OrderByDescending(c => c.Count)
+            .ThenBy(c => CombinationCost(c, playerIndex))
+            .First();
+    }
+
+    private List<List<Card>> FindLegalResponses(int playerIndex)
+    {
+        var hand = Players[playerIndex].Hand;
+        var result = new List<List<Card>>();
+        int targetCount = TableCombination?.CardCount ?? 1;
+
+        if (targetCount <= 7)
+        {
+            foreach (var cards in Combinations(hand, targetCount))
+            {
+                var combo = CombinationEvaluator.Evaluate(
+                    cards,
+                    TableCombination?.Type == ComboType.Single
+                        ? TableCombination.Value
+                        : 0);
+
+                if (CombinationEvaluator.CanBeat(combo, TableCombination))
+                    result.Add(cards);
+            }
+        }
+
+        foreach (var bomb in FindBombs(hand))
+        {
+            if (CombinationEvaluator.CanBeat(
+                    CombinationEvaluator.Evaluate(bomb),
+                    TableCombination))
+                result.Add(bomb);
+        }
+
+        return result;
+    }
+
+    private double CombinationCost(List<Card> cards, int playerIndex)
+    {
+        var player = Players[playerIndex];
+        double cost = 0;
+
+        foreach (var card in cards)
+        {
+            cost += SortValue(card);
+
+            if (card.Special == SpecialCard.Dragon) cost += 40;
+            if (card.Special == SpecialCard.Phoenix) cost += 32;
+
+            if (!card.IsSpecial &&
+                player.Hand.Count(x => !x.IsSpecial && x.Rank == card.Rank) >= 3)
+                cost += 8;
+        }
+
+        cost -= cards.Count * 6;
+
+        if ((player.CalledTichu || player.CalledGrandTichu) &&
+            player.Hand.Count <= 6)
+            cost -= cards.Count * 6;
+
+        return cost;
+    }
+
+    private bool ShouldBotCallGrandTichu(Player player)
+    {
+        double strength = 0;
+
+        foreach (var card in player.Hand)
+        {
+            if (card.Special == SpecialCard.Dragon) strength += 4;
+            else if (card.Special == SpecialCard.Phoenix) strength += 3;
+            else if (!card.IsSpecial && card.Rank == 14) strength += 2.3;
+            else if (!card.IsSpecial && card.Rank == 13) strength += 1.5;
+            else if (!card.IsSpecial && card.Rank >= 11) strength += 0.7;
+        }
+
+        strength += player.Hand
+            .Where(c => !c.IsSpecial)
+            .GroupBy(c => c.Rank)
+            .Count(g => g.Count() >= 2) * 0.8;
+
+        return strength >= 10.5;
+    }
 
     private bool CanSatisfyWish(int playerIndex, int wishRank)
     {
@@ -607,7 +703,6 @@ public sealed class TichuGame
         if (!hand.Any(c => !c.IsSpecial && c.Rank == wishRank))
             return false;
 
-        // Test many possible legal plays that contain the wished rank.
         int maxCount = Math.Min(7, hand.Count);
 
         for (int count = 1; count <= maxCount; count++)
@@ -643,199 +738,18 @@ public sealed class TichuGame
         _ => rank.ToString()
     };
 
-    // -------------------- BOT AI --------------------
-
-    public List<Card>? ChooseBotPlay(int playerIndex)
-    {
-        var player = Players[playerIndex];
-        var hand = player.Hand;
-
-        if (TableCombination is null)
-            return ChooseBestLead(playerIndex);
-
-        var legal = FindLegalResponses(playerIndex);
-
-        if (legal.Count == 0)
-            return null;
-
-        // If wish is active, only candidates fulfilling it remain.
-        if (MahJongWishRank.HasValue && CanSatisfyWish(playerIndex, MahJongWishRank.Value))
-            legal = legal.Where(c => ContainsWish(c, MahJongWishRank.Value)).ToList();
-
-        if (legal.Count == 0)
-            return null;
-
-        // Prefer the cheapest winning combination.
-        return legal
-            .OrderBy(c => CombinationCost(c, playerIndex))
-            .First();
-    }
-
-    public List<Card>? ChooseBotOutOfTurnBomb(int playerIndex)
-    {
-        if (!ExchangeCompleted || RoundOver || playerIndex == CurrentPlayerIndex)
-            return null;
-
-        var bombs = FindBombs(Players[playerIndex].Hand)
-            .Where(b => CombinationEvaluator.CanBeat(
-                CombinationEvaluator.Evaluate(b), TableCombination))
-            .ToList();
-
-        if (bombs.Count == 0)
-            return null;
-
-        // Strategic use:
-        // bomb more readily if an opponent is close to going out,
-        // or bot itself has few cards remaining.
-        bool danger = Players.Any(p =>
-            p.Team != Players[playerIndex].Team &&
-            !p.IsOut &&
-            p.Hand.Count <= 3);
-
-        bool selfClose = Players[playerIndex].Hand.Count <= 5;
-
-        if (!danger && !selfClose && random.NextDouble() > 0.12)
-            return null;
-
-        return bombs
-            .OrderBy(b => CombinationEvaluator.Evaluate(b).CardCount)
-            .ThenBy(b => CombinationEvaluator.Evaluate(b).Value)
-            .First();
-    }
-
-    private List<Card> ChooseBestLead(int playerIndex)
-    {
-        var p = Players[playerIndex];
-        var hand = p.Hand;
-
-        // Dog is good when partner can profit and bot still has many cards.
-        var dog = hand.FirstOrDefault(c => c.Special == SpecialCard.Dog);
-        if (dog is not null && hand.Count >= 8 && !Players[(playerIndex + 2) % 4].IsOut)
-            return new List<Card> { dog };
-
-        var candidates = new List<List<Card>>();
-
-        // Preserve bombs unless close to finishing.
-        candidates.AddRange(FindPairs(hand));
-        candidates.AddRange(FindTriples(hand));
-        candidates.AddRange(FindFullHouses(hand));
-        candidates.AddRange(FindStraights(hand));
-        candidates.AddRange(hand.Select(c => new List<Card> { c }));
-
-        candidates = candidates
-            .Where(c => CombinationEvaluator.Evaluate(c).Type != ComboType.Invalid)
-            .ToList();
-
-        // Prefer shedding more cards, but avoid wasting premium cards.
-        return candidates
-            .OrderByDescending(c => c.Count)
-            .ThenBy(c => CombinationCost(c, playerIndex))
-            .First();
-    }
-
-    private List<List<Card>> FindLegalResponses(int playerIndex)
-    {
-        var hand = Players[playerIndex].Hand;
-        var result = new List<List<Card>>();
-
-        int targetCount = TableCombination?.CardCount ?? 1;
-
-        // Generate exact card-count combinations for ordinary responses.
-        // Cap at 7 because Tichu hands are only 14 cards, and this is sufficient
-        // for most normal play while keeping bot turns responsive.
-        if (targetCount <= 7)
-        {
-            foreach (var set in Combinations(hand, targetCount))
-            {
-                var combo = CombinationEvaluator.Evaluate(
-                    set,
-                    TableCombination?.Type == ComboType.Single
-                        ? TableCombination.Value
-                        : 0);
-
-                if (CombinationEvaluator.CanBeat(combo, TableCombination))
-                    result.Add(set);
-            }
-        }
-
-        // Bombs may beat a non-bomb regardless of card count.
-        foreach (var bomb in FindBombs(hand))
-        {
-            var combo = CombinationEvaluator.Evaluate(bomb);
-            if (CombinationEvaluator.CanBeat(combo, TableCombination))
-                result.Add(bomb);
-        }
-
-        return result;
-    }
-
-    private double CombinationCost(List<Card> cards, int playerIndex)
-    {
-        var p = Players[playerIndex];
-        double cost = 0;
-
-        foreach (var c in cards)
-        {
-            cost += SortValue(c);
-
-            if (c.Special == SpecialCard.Dragon) cost += 40;
-            if (c.Special == SpecialCard.Phoenix) cost += 32;
-            if (c.Special == SpecialCard.Dog) cost -= 10;
-
-            if (!c.IsSpecial)
-            {
-                int sameRank = p.Hand.Count(x => !x.IsSpecial && x.Rank == c.Rank);
-                if (sameRank >= 3)
-                    cost += 8;
-            }
-        }
-
-        // Shedding cards is valuable.
-        cost -= cards.Count * 6;
-
-        // If bot called Tichu and has few cards, become more aggressive.
-        if ((p.CalledTichu || p.CalledGrandTichu) && p.Hand.Count <= 6)
-            cost -= cards.Count * 6;
-
-        return cost;
-    }
-
-    private bool ShouldBotCallGrandTichu(Player p)
-    {
-        double strength = 0;
-
-        foreach (var c in p.Hand)
-        {
-            if (c.Special == SpecialCard.Dragon) strength += 4;
-            else if (c.Special == SpecialCard.Phoenix) strength += 3;
-            else if (!c.IsSpecial && c.Rank == 14) strength += 2.3;
-            else if (!c.IsSpecial && c.Rank == 13) strength += 1.5;
-            else if (!c.IsSpecial && c.Rank >= 11) strength += 0.7;
-        }
-
-        var groups = p.Hand
-            .Where(c => !c.IsSpecial)
-            .GroupBy(c => c.Rank)
-            .Select(g => g.Count());
-
-        strength += groups.Count(x => x >= 2) * 0.8;
-        strength += groups.Count(x => x >= 3) * 1.2;
-
-        return strength >= 10.5;
-    }
-
     private static IEnumerable<List<Card>> FindPairs(List<Card> hand)
     {
-        foreach (var g in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
-            if (g.Count() >= 2)
-                yield return g.Take(2).ToList();
+        foreach (var group in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
+            if (group.Count() >= 2)
+                yield return group.Take(2).ToList();
     }
 
     private static IEnumerable<List<Card>> FindTriples(List<Card> hand)
     {
-        foreach (var g in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
-            if (g.Count() >= 3)
-                yield return g.Take(3).ToList();
+        foreach (var group in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
+            if (group.Count() >= 3)
+                yield return group.Take(3).ToList();
     }
 
     private static IEnumerable<List<Card>> FindFullHouses(List<Card> hand)
@@ -847,11 +761,8 @@ public sealed class TichuGame
 
         foreach (var triple in groups.Where(g => g.Count() >= 3))
         {
-            foreach (var pair in groups.Where(g =>
-                         g.Key != triple.Key && g.Count() >= 2))
-            {
+            foreach (var pair in groups.Where(g => g.Key != triple.Key && g.Count() >= 2))
                 yield return triple.Take(3).Concat(pair.Take(2)).ToList();
-            }
         }
     }
 
@@ -887,21 +798,13 @@ public sealed class TichuGame
 
     private static IEnumerable<List<Card>> FindBombs(List<Card> hand)
     {
-        foreach (var g in hand
-                     .Where(c => !c.IsSpecial)
-                     .GroupBy(c => c.Rank))
-        {
-            if (g.Count() == 4)
-                yield return g.ToList();
-        }
+        foreach (var group in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Rank))
+            if (group.Count() == 4)
+                yield return group.ToList();
 
-        foreach (var suitGroup in hand
-                     .Where(c => !c.IsSpecial)
-                     .GroupBy(c => c.Suit))
+        foreach (var suitGroup in hand.Where(c => !c.IsSpecial).GroupBy(c => c.Suit))
         {
-            var cards = suitGroup
-                .OrderBy(c => c.Rank)
-                .ToList();
+            var cards = suitGroup.OrderBy(c => c.Rank).ToList();
 
             for (int i = 0; i < cards.Count; i++)
             {
@@ -925,9 +828,7 @@ public sealed class TichuGame
         }
     }
 
-    private static IEnumerable<List<Card>> Combinations(
-        List<Card> source,
-        int choose)
+    private static IEnumerable<List<Card>> Combinations(List<Card> source, int choose)
     {
         if (choose <= 0 || choose > source.Count)
             yield break;
@@ -942,18 +843,16 @@ public sealed class TichuGame
                 yield break;
             }
 
-            for (int i = start;
-                 i <= source.Count - (choose - depth);
-                 i++)
+            for (int i = start; i <= source.Count - (choose - depth); i++)
             {
                 buffer[depth] = source[i];
 
-                foreach (var item in Recurse(i + 1, depth + 1))
-                    yield return item;
+                foreach (var result in Recurse(i + 1, depth + 1))
+                    yield return result;
             }
         }
 
-        foreach (var x in Recurse(0, 0))
-            yield return x;
+        foreach (var result in Recurse(0, 0))
+            yield return result;
     }
 }
